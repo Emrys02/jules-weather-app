@@ -103,11 +103,11 @@ def get_coordinates(city: str, state_code: str, country_code: str, api_key: str)
         lon = data[0]["lon"]
         return lat, lon
 
-    except requests.exceptions.RequestException as e:
-        raise ConnectionError(f"Network error occurred during geocoding: {e}")
     except requests.exceptions.HTTPError as e:
         # Handle non-401 HTTP errors that raise_for_status() catches
-         raise ValueError(f"Geocoding API error or unexpected status code: {e} - {response.text}")
+        raise ValueError(f"Geocoding API error or unexpected status code: {e} - {response.text}")
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"Network error occurred during geocoding: {e}")
     except (KeyError, IndexError) as e:
         # Handle potential issues with the structure of the response JSON
         raise ValueError(f"Error parsing geocoding response: {e}")
