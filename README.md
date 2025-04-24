@@ -1,14 +1,15 @@
 # Weather CLI Tool
 
-A simple command-line tool to fetch and display current weather information for a specified city using the OpenWeatherMap API.
+A command-line tool to fetch and display current weather information for a specified location (city, state/region, country) using the OpenWeatherMap API.
 
 ## Features
 
-*   Fetches current weather data (temperature, description, humidity, etc.).
-*   Supports specifying city and optional country code.
-*   Retrieves API key from command-line argument or environment variable.
+*   Performs geocoding to find latitude/longitude based on city, state code, and country code.
+*   Fetches current weather data (temperature, description, humidity, etc.) for the found coordinates.
+*   Requires specifying city, state code (e.g., 'CA' for California, 'England' for UK region), and 2-letter country code (e.g., 'US', 'GB').
+*   Retrieves API key from command-line argument or environment variable (`OPENWEATHERMAP_API_KEY`).
 *   Displays weather information in a user-friendly format.
-*   Logs the execution time of the API call.
+*   Logs the execution time of API calls.
 
 ## Requirements
 
@@ -49,26 +50,31 @@ Run the script from the project's root directory using `python src/weather_cli.p
 
 **Basic Usage (API key set as environment variable):**
 
-```bash
-python src/weather_cli.py --city London
-```
-
-**Specify City and Country:**
+Requires `--city`, `--state`, and `--country`.
 
 ```bash
-python src/weather_cli.py --city London --country GB
+# Example for London, England, UK
+python src/weather_cli.py --city London --state England --country GB
+
+# Example for San Francisco, California, US
+python src/weather_cli.py --city "San Francisco" --state CA --country US
 ```
 
 **Provide API Key via Argument:**
 
+Also requires `--city`, `--state`, and `--country`.
+
 ```bash
-python src/weather_cli.py --city Paris --apikey 'your_actual_api_key'
+python src/weather_cli.py --city Paris --state IDF --country FR --apikey 'your_actual_api_key'
 ```
+*(Note: 'IDF' is for Île-de-France region)*
 
 **Example Output:**
 
 ```
-Fetching weather for London, GB...
+Fetching coordinates for London, England, GB...
+Coordinates found: Lat=51.5073, Lon=-0.1277
+Fetching weather data for Lat=51.5073, Lon=-0.1277...
 Execution time for get_weather_data: 0.456 seconds
 ----------------------------------------
 Weather in London, GB at 2023-10-27 10:30:00 BST
@@ -81,7 +87,7 @@ Pressure: 1010 hPa
 Wind Speed: 4.1 m/s
 ----------------------------------------
 ```
-*(Note: Output details like time and weather conditions will vary.)*
+*(Note: Output details like coordinates, time, and weather conditions will vary.)*
 
 ## Running Tests
 

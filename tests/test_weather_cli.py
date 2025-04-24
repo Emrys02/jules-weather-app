@@ -31,6 +31,7 @@ if srcdir not in sys.path:
 from weather_cli import (
     main,
     get_api_key,
+    get_coordinates, # Added import
     get_weather_data,
     display_weather_data,
     log_execution_time,
@@ -74,28 +75,21 @@ class TestWeatherCLI(unittest.TestCase):
 
     # --- Tests for argument parsing and API key retrieval ---
 
-    @patch("argparse.ArgumentParser.parse_args")
-    @patch("weather_cli.get_api_key")
-    @patch("weather_cli.get_weather_data")
-    @patch("weather_cli.display_weather_data")
-    def test_main_basic_args(
-        self, mock_display, mock_get_weather, mock_get_key, mock_parse_args
-    ):
-        """Test main function integrates components with basic arguments."""
-        mock_parse_args.return_value = MagicMock(
-            city="TestCity", country="TC", apikey="testkey"
-        )
-        mock_get_key.return_value = "testkey"
-        mock_get_weather.return_value = SAMPLE_WEATHER_DATA
-
+    # Note: The duplicate test_main_basic_args seems like an artifact. Removing one.
     @patch('argparse.ArgumentParser.parse_args')
     @patch('weather_cli.get_api_key')
+    @patch('weather_cli.get_coordinates') # Added patch
     @patch('weather_cli.get_weather_data')
     @patch('weather_cli.display_weather_data')
-    def test_main_basic_args(self, mock_display, mock_get_weather, mock_get_key, mock_parse_args):
-        """Test main function with basic arguments."""
-        mock_parse_args.return_value = MagicMock(city='TestCity', country='TC', apikey='testkey')
+    def test_main_integration(self, mock_display, mock_get_weather, mock_get_coords, mock_get_key, mock_parse_args):
+        """Test main function integrates components including coordinate lookup."""
+        # Updated mock args to include state
+        mock_parse_args.return_value = MagicMock(
+            city='TestCity', state='TS', country='TC', apikey='testkey'
+        )
         mock_get_key.return_value = 'testkey'
+        # Set return value for the mocked get_coordinates
+        mock_get_coords.return_value = (51.5, -0.1) # Sample coordinates
         mock_get_weather.return_value = SAMPLE_WEATHER_DATA
 
         main()
@@ -103,8 +97,30 @@ class TestWeatherCLI(unittest.TestCase):
         # Verify that the main components are called correctly
         mock_parse_args.assert_called_once()
         mock_get_key.assert_called_once_with(mock_parse_args.return_value)
-        mock_get_weather.assert_called_once_with("TestCity", "TC", "testkey")
+        # Verify get_coordinates is called with city, state, country, key
+        mock_get_coords.assert_called_once_with('TestCity', 'TS', 'TC', 'testkey')
+        # Verify get_weather_data is called with lat, lon, key
+        mock_get_weather.assert_called_once_with(51.5, -0.1, 'testkey')
         mock_display.assert_called_once_with(SAMPLE_WEATHER_DATA)
+
+    # Add a test for main handling errors from get_coordinates
+    @patch('argparse.ArgumentParser.parse_args')
+    @patch('weather_cli.get_api_key')
+    @patch('weather_cli.get_coordinates')
+    @patch('builtins.print') # To capture error output
+    def test_main_handles_get_coordinates_error(self, mock_print, mock_get_coords, mock_get_key, mock_parse_args):
+        """Test main function handles errors raised by get_coordinates."""
+        mock_parse_args.return_value = MagicMock(city='BadCity', state='BS', country='BC', apikey='key')
+        mock_get_key.return_value = 'key'
+        # Simulate get_coordinates raising a ValueError (e.g., location not found)
+        mock_get_coords.side_effect = ValueError("Location 'BadCity,BS,BC' not found.")
+
+        main()
+
+        mock_get_coords.assert_called_once_with('BadCity', 'BS', 'BC', 'key')
+        # Verify the error message is printed
+        self.assertTrue(any("Error: Location 'BadCity,BS,BC' not found." in str(call_args) for call_args in mock_print.call_args_list))
+
 
     def test_get_api_key_from_arg(self):
         """Test get_api_key retrieves key from command line arguments."""
@@ -126,6 +142,92 @@ class TestWeatherCLI(unittest.TestCase):
         ):
             get_api_key(args)
 
+    # --- Tests for get_coordinates (Geocoding API interaction) ---
+
+    @patch("requests.get")
+    def test_get_coordinates_success(self, mock_get):
+        """Test get_coordinates handles a successful Geocoding API response."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        # Simulate Geocoding API response structure
+        mock_response.json.return_value = [{"lat": 51.5074, "lon": -0.1278, "name": "London", "country": "GB"}]
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        lat, lon = get_coordinates("London", "ENG", "GB", "fakekey")
+        self.assertEqual((lat, lon), (51.5074, -0.1278))
+        mock_get.assert_called_once_with(
+            "http://api.openweathermap.org/geo/1.0/direct",
+            params={"q": "London,ENG,GB", "limit": 1, "appid": "fakekey"},
+        )
+        mock_response.raise_for_status.assert_called_once()
+
+    @patch("requests.get")
+    def test_get_coordinates_location_not_found(self, mock_get):
+        """Test get_coordinates handles an empty response (location not found)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = [] # Empty list signifies not found
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        with self.assertRaisesRegex(ValueError, "Location 'Nowhere,NV,US' not found"):
+            get_coordinates("Nowhere", "NV", "US", "fakekey")
+
+    @patch("requests.get")
+    def test_get_coordinates_invalid_api_key(self, mock_get):
+        """Test get_coordinates handles a 401 Invalid API Key error."""
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        # Simulate requests.raise_for_status() behavior for 401 (although we check status directly)
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response
+        )
+        mock_get.return_value = mock_response
+
+        with self.assertRaisesRegex(ValueError, "Invalid API key provided"):
+            get_coordinates("London", "ENG", "GB", "invalidkey")
+
+    @patch("requests.get")
+    def test_get_coordinates_network_error(self, mock_get):
+        """Test get_coordinates handles a requests.RequestException."""
+        mock_get.side_effect = requests.exceptions.RequestException("Network issue")
+
+        with self.assertRaisesRegex(
+            ConnectionError, "Network error occurred during geocoding: Network issue"
+        ):
+            get_coordinates("London", "ENG", "GB", "fakekey")
+
+    @patch("requests.get")
+    def test_get_coordinates_other_http_error(self, mock_get):
+        """Test get_coordinates handles other HTTP errors (e.g., 500)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "Server Error"
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=mock_response
+        )
+        mock_get.return_value = mock_response
+
+        with self.assertRaisesRegex(
+            ValueError, "Geocoding API error or unexpected status code: .*Server Error"
+        ):
+            get_coordinates("London", "ENG", "GB", "fakekey")
+
+    @patch("requests.get")
+    def test_get_coordinates_json_parsing_error(self, mock_get):
+        """Test get_coordinates handles errors parsing the JSON response."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        # Malformed JSON or unexpected structure
+        mock_response.json.return_value = [{"latitude": 51.5}] # Missing 'lon' or 'lat'
+        mock_response.raise_for_status = MagicMock()
+        mock_get.return_value = mock_response
+
+        with self.assertRaisesRegex(ValueError, "Error parsing geocoding response:"):
+            get_coordinates("London", "ENG", "GB", "fakekey")
+
+
     # --- Tests for get_weather_data (API interaction) ---
 
     @patch("requests.get")
@@ -137,18 +239,19 @@ class TestWeatherCLI(unittest.TestCase):
         mock_response.raise_for_status = MagicMock()  # Mock this method
         mock_get.return_value = mock_response
 
-        data = get_weather_data("London", "GB", "fakekey")
+        # Call with latitude and longitude
+        data = get_weather_data(51.5085, -0.1257, "fakekey")
         self.assertEqual(data, SAMPLE_WEATHER_DATA)
-        # Verify the correct API call parameters
+        # Verify the correct API call parameters using lat/lon
         mock_get.assert_called_once_with(
             "https://api.openweathermap.org/data/2.5/weather",
-            params={"q": "London,GB", "appid": "fakekey", "units": "metric"},
+            params={"lat": 51.5085, "lon": -0.1257, "appid": "fakekey", "units": "metric"},
         )
-        mock_response.raise_for_status.assert_called_once()  # Ensure status check was called
+        mock_response.raise_for_status.assert_called_once()
 
     @patch("requests.get")
-    def test_get_weather_data_city_not_found(self, mock_get):
-        """Test get_weather_data handles a 404 City Not Found error."""
+    def test_get_weather_data_not_found_for_coords(self, mock_get):
+        """Test get_weather_data handles a 404 for coordinates not found."""
         mock_response = MagicMock()
         mock_response.status_code = 404
         # Simulate requests.raise_for_status() behavior for 404
@@ -157,8 +260,9 @@ class TestWeatherCLI(unittest.TestCase):
         )
         mock_get.return_value = mock_response
 
-        with self.assertRaisesRegex(ValueError, "City 'NotFoundCity' not found"):
-            get_weather_data("NotFoundCity", None, "fakekey")
+        # Changed regex to match the new error message
+        with self.assertRaisesRegex(ValueError, "Weather data not found for the provided coordinates"):
+            get_weather_data(99.99, -99.99, "fakekey") # Use dummy coordinates
 
     @patch("requests.get")
     def test_get_weather_data_invalid_api_key(self, mock_get):
@@ -171,7 +275,7 @@ class TestWeatherCLI(unittest.TestCase):
         mock_get.return_value = mock_response
 
         with self.assertRaisesRegex(ValueError, "Invalid API key provided"):
-            get_weather_data("London", "GB", "invalidkey")
+            get_weather_data(51.5, -0.1, "invalidkey") # Use dummy coordinates
 
     @patch("requests.get")
     def test_get_weather_data_network_error(self, mock_get):
@@ -181,7 +285,7 @@ class TestWeatherCLI(unittest.TestCase):
         with self.assertRaisesRegex(
             ConnectionError, "Network error occurred: Network issue"
         ):
-            get_weather_data("London", "GB", "fakekey")
+            get_weather_data(51.5, -0.1, "fakekey") # Use dummy coordinates
 
     @patch("requests.get")
     def test_get_weather_data_other_http_error(self, mock_get):
@@ -197,7 +301,7 @@ class TestWeatherCLI(unittest.TestCase):
         with self.assertRaisesRegex(
             RuntimeError, "API error occurred: .*Internal Server Error"
         ):
-            get_weather_data("London", "GB", "fakekey")
+            get_weather_data(51.5, -0.1, "fakekey") # Use dummy coordinates
 
     # --- Tests for display_weather_data (Output formatting) ---
 
