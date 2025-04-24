@@ -62,14 +62,65 @@ def log_execution_time(func):
         return result
     return wrapper
 
-@log_execution_time
-def get_weather_data(city: str, country_code: str | None, api_key: str) -> dict:
+
+def get_coordinates(city: str, state_code: str, country_code: str, api_key: str) -> tuple[float, float]:
     """
-    Fetches weather data from the OpenWeatherMap API for a given location.
+    Fetches latitude and longitude for a location using the OpenWeatherMap Geocoding API.
 
     Args:
         city: The name of the city.
-        country_code: The optional two-letter country code (ISO 3166-1 alpha-2).
+        state_code: The state code (e.g., CA for California).
+        country_code: The 2-letter country code (e.g., US).
+        api_key: The OpenWeatherMap API key.
+
+    Returns:
+        A tuple containing the latitude and longitude (lat, lon).
+
+    Raises:
+        ConnectionError: If a network error occurs during the API request.
+        ValueError: If the API key is invalid (401), the location is not found,
+                    or another API error occurs.
+    """
+    base_url = "http://api.openweathermap.org/geo/1.0/direct"
+    location_query = f"{city},{state_code},{country_code}"
+    params = {"q": location_query, "limit": 1, "appid": api_key}
+
+    try:
+        response = requests.get(base_url, params=params)
+        # Check for specific HTTP errors first
+        if response.status_code == 401:
+             raise ValueError("Invalid API key provided.")
+        # Raise for other bad status codes (4xx or 5xx)
+        response.raise_for_status()
+
+        data = response.json()
+
+        if not data: # Empty list means location not found
+            raise ValueError(f"Location '{location_query}' not found.")
+
+        # Extract lat and lon from the first result
+        lat = data[0]["lat"]
+        lon = data[0]["lon"]
+        return lat, lon
+
+    except requests.exceptions.HTTPError as e:
+        # Handle non-401 HTTP errors that raise_for_status() catches
+        raise ValueError(f"Geocoding API error or unexpected status code: {e} - {response.text}")
+    except requests.exceptions.RequestException as e:
+        raise ConnectionError(f"Network error occurred during geocoding: {e}")
+    except (KeyError, IndexError) as e:
+        # Handle potential issues with the structure of the response JSON
+        raise ValueError(f"Error parsing geocoding response: {e}")
+
+
+@log_execution_time
+def get_weather_data(latitude: float, longitude: float, api_key: str) -> dict:
+    """
+    Fetches weather data from the OpenWeatherMap API for given coordinates.
+
+    Args:
+        latitude: The latitude of the location.
+        longitude: The longitude of the location.
         api_key: The OpenWeatherMap API key.
 
     Returns:
@@ -78,14 +129,16 @@ def get_weather_data(city: str, country_code: str | None, api_key: str) -> dict:
     Raises:
         ConnectionError: If a network error occurs during the API request.
         ValueError: If the city is not found (404) or the API key is invalid (401).
+        ValueError: If weather data is not found for the coordinates (404)
+                    or the API key is invalid (401).
         RuntimeError: For other non-successful HTTP status codes from the API.
     """
     base_url = "https://api.openweathermap.org/data/2.5/weather"
-    location = f"{city},{country_code}" if country_code else city
-    params = {"q": location, "appid": api_key, "units": "metric"}
+    params = {"lat": latitude, "lon": longitude, "appid": api_key, "units": "metric"}
     try:
         response = requests.get(base_url, params=params)
-        response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+        # Raise HTTPError for bad responses (4xx or 5xx) first
+        response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
         raise ConnectionError(f"Network error occurred: {e}")
@@ -93,7 +146,8 @@ def get_weather_data(city: str, country_code: str | None, api_key: str) -> dict:
         if response.status_code == 401:
             raise ValueError("Invalid API key provided.")
         elif response.status_code == 404:
-            raise ValueError(f"City '{location}' not found.")
+            # Changed error message to be generic for coordinates
+            raise ValueError("Weather data not found for the provided coordinates.")
         else:
             # Ensure the error message includes the response text for debugging
             raise RuntimeError(f"API error occurred: {e} - {response.text}")
@@ -146,11 +200,12 @@ def main() -> None:
     function, and then calls the display function. Catches and prints errors
     that occur during the process.
     """
-    parser = argparse.ArgumentParser(description="Get weather information for a city.")
-    parser.add_argument("--city", required=True, help="The city name.")
-    parser.add_argument("--country", help="The 2-letter country code (optional).")
+    parser = argparse.ArgumentParser(description="Get weather information for a specific location.")
+    parser.add_argument("--city", required=True, help="The name of the city.")
+    parser.add_argument("--state", required=True, help="The state code (e.g., CA for California).")
+    parser.add_argument("--country", required=True, help="The 2-letter country code (e.g., US).")
     parser.add_argument(
-        "--apikey", help="Your OpenWeatherMap API key (optional)."
+        "--apikey", help="Your OpenWeatherMap API key (optional, can use OPENWEATHERMAP_API_KEY env var)."
     )
 
     args = parser.parse_args()
@@ -159,12 +214,21 @@ def main() -> None:
 
     try:
         api_key = get_api_key(args)
-        print(f"Fetching weather for {args.city}{f', {args.country}' if args.country else ''}...")
-        weather_data = get_weather_data(args.city, args.country, api_key)
+        location_string = f"{args.city}, {args.state}, {args.country}"
+        # Fetch coordinates first
+        print(f"Fetching coordinates for {location_string}...")
+        lat, lon = get_coordinates(args.city, args.state, args.country, api_key)
+        print(f"Coordinates found: Lat={lat}, Lon={lon}")
+
+        # Fetch weather data using coordinates
+        print(f"Fetching weather data for Lat={lat}, Lon={lon}...")
+        weather_data = get_weather_data(lat, lon, api_key)
         display_weather_data(weather_data)
+
+    # The existing exception handlers should catch errors from both functions
     except (ValueError, ConnectionError, RuntimeError) as error:
         print(f"Error: {error}")
-    except Exception as unexpected_error:  # Catch any other unexpected errors
+    except Exception as unexpected_error: # Catch any other unexpected errors
         print(f"An unexpected error occurred: {unexpected_error}")
 
 
